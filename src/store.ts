@@ -22,6 +22,11 @@ export const reactFlowMachine = setup({
 			reactFlowInstance: ReactFlowInstance | null;
 		},
 		events: {} as
+			| {
+					type: "nodes.add";
+					node: Omit<Node, "position">;
+					mouseEvent: React.MouseEvent<HTMLDivElement, MouseEvent>;
+			  }
 			| { type: "nodes.change"; changeNodes: NodeChange[] }
 			| { type: "edges.change"; changeEdges: EdgeChange[] }
 			| { type: "connect"; connection: Connection }
@@ -32,8 +37,9 @@ export const reactFlowMachine = setup({
 	},
 	actors: {
 		restoreState: fromPromise<ReactFlowJsonObject>(async () => {
-			const data = localStorage.getItem(localStorageKey);
-			return JSON.parse(data ?? "");
+			const data =
+				localStorage.getItem(localStorageKey) ?? '{"nodes":[], "edges":[]}';
+			return JSON.parse(data);
 		}),
 		saveState: fromPromise<unknown, { reactFlowInstance: ReactFlowInstance }>(
 			async ({ input }) => {
@@ -84,6 +90,22 @@ export const reactFlowMachine = setup({
 	on: {
 		"context.store": {
 			target: ".saveStore",
+		},
+		"nodes.add": {
+			actions: raise(({ context, event }) => {
+				if (context.reactFlowInstance == null) {
+					throw new Error("No reactFlowInstance");
+				}
+				const position = context.reactFlowInstance.screenToFlowPosition({
+					x: event.mouseEvent.clientX,
+					y: event.mouseEvent.clientY,
+				});
+				const node: Node = {
+					...event.node,
+					position,
+				};
+				return { type: "nodes.set", nodes: [...context.nodes, node] };
+			}),
 		},
 		"nodes.change": {
 			actions: raise(({ context, event }) => ({
