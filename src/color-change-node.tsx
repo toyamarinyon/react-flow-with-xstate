@@ -1,11 +1,39 @@
-import { useSelector } from "@xstate/react";
 import type { FC } from "react";
 import { Handle, type NodeProps, Position } from "reactflow";
-import { type ActorRefFrom, log, setup } from "xstate";
-// import { useReactFlowMachineActor } from "./use-react-flow-machine";
+import { type ActorRefFrom, sendTo, setup } from "xstate";
+import type { reactFlowMachine } from "./store";
 
-const colorChooserMachine = setup({}).createMachine({
-	entry: log("hello"),
+export const colorChooserMachine = setup({
+	types: {
+		context: {} as {
+			parentRef: ActorRefFrom<typeof reactFlowMachine>;
+			nodeId: string;
+		},
+		input: {} as {
+			parentRef: ActorRefFrom<typeof reactFlowMachine>;
+			nodeId: string;
+		},
+		events: {} as {
+			type: "node.change";
+			color: string;
+		},
+	},
+}).createMachine({
+	context: ({ input }) => input,
+	on: {
+		"node.change": {
+			actions: [
+				sendTo(
+					({ context }) => context.parentRef,
+					({ event, context }) => ({
+						type: "node.changeData",
+						data: { color: event.color },
+						nodeId: context.nodeId,
+					}),
+				),
+			],
+		},
+	},
 });
 
 type NodeData = {
@@ -14,18 +42,18 @@ type NodeData = {
 };
 
 export const ColorChooserNode: FC<NodeProps<NodeData>> = ({ data }) => {
-	useSelector(data.ref, (state) => state);
-
 	return (
 		<div style={{ backgroundColor: data.color, borderRadius: 10 }}>
 			<Handle type="target" position={Position.Top} />
 			<div style={{ padding: 20 }}>
-				{/* <input
+				<input
 					type="color"
 					defaultValue={data.color}
-					onChange={(evt) => updateNodeColor(id, evt.target.value)}
+					onChange={(event) =>
+						data.ref.send({ type: "node.change", color: event.target.value })
+					}
 					className="nodrag"
-				/> */}
+				/>
 			</div>
 			<Handle type="source" position={Position.Bottom} />
 		</div>

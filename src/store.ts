@@ -10,7 +10,15 @@ import {
 	applyEdgeChanges,
 	applyNodeChanges,
 } from "reactflow";
-import { assign, cancel, fromPromise, raise, setup } from "xstate";
+import {
+	type ActorRefFrom,
+	assign,
+	cancel,
+	fromPromise,
+	raise,
+	setup,
+} from "xstate";
+import { colorChooserMachine } from "./color-change-node";
 
 const localStorageKey = "react-flow-state";
 
@@ -33,7 +41,13 @@ export const reactFlowMachine = setup({
 			| { type: "nodes.set"; nodes: Node[] }
 			| { type: "edges.set"; edges: Edge[] }
 			| { type: "reactFlowInstance.set"; reactFlowInstance: ReactFlowInstance }
-			| { type: "context.store" },
+			| { type: "debouncedSave" }
+			| { type: "save" }
+			| {
+					type: "node.changeData";
+					data: Record<string, unknown>;
+					nodeId: string;
+			  },
 	},
 	actors: {
 		restoreState: fromPromise<ReactFlowJsonObject>(async () => {
@@ -63,15 +77,49 @@ export const reactFlowMachine = setup({
 				src: "restoreState",
 				onDone: {
 					target: "active",
-					actions: assign(({ event, context }) => ({
+					actions: assign(({ event, context, spawn, self }) => ({
 						...context,
-						nodes: event.output.nodes,
+						nodes: event.output.nodes.map(
+							({ data, ...node }): Node => ({
+								...node,
+								data: {
+									...data,
+									ref: spawn(colorChooserMachine, {
+										input: {
+											nodeId: node.id,
+											/**
+											 * workaround: https://github.com/statelyai/xstate/issues/4485
+											 */
+											parentRef: self as ActorRefFrom<typeof reactFlowMachine>,
+										},
+									}),
+								},
+							}),
+						),
 						edges: event.output.edges,
 					})),
 				},
 			},
 		},
-		active: {},
+		active: {
+			on: {
+				debouncedSave: {
+					actions: [
+						cancel("raise-save"),
+						raise(
+							{ type: "save" },
+							{
+								id: "raise-save",
+								delay: 1000,
+							},
+						),
+					],
+				},
+				save: {
+					target: "saveStore",
+				},
+			},
+		},
 		saveStore: {
 			invoke: {
 				src: "saveState",
@@ -88,65 +136,105 @@ export const reactFlowMachine = setup({
 		},
 	},
 	on: {
-		"context.store": {
-			target: ".saveStore",
-		},
 		"nodes.add": {
-			actions: raise(({ context, event }) => {
-				if (context.reactFlowInstance == null) {
-					throw new Error("No reactFlowInstance");
-				}
-				const position = context.reactFlowInstance.screenToFlowPosition({
-					x: event.mouseEvent.clientX,
-					y: event.mouseEvent.clientY,
-				});
-				const node: Node = {
-					...event.node,
-					position,
-				};
-				return { type: "nodes.set", nodes: [...context.nodes, node] };
-			}),
+			actions: [
+				assign({
+					nodes: ({ context, event, spawn, self }) => {
+						if (context.reactFlowInstance == null) {
+							throw new Error("No reactFlowInstance");
+						}
+						const position = context.reactFlowInstance.screenToFlowPosition({
+							x: event.mouseEvent.clientX,
+							y: event.mouseEvent.clientY,
+						});
+						const node: Node = {
+							...event.node,
+							position,
+							data: {
+								...event.node.data,
+								ref: spawn(colorChooserMachine, {
+									input: {
+										nodeId: event.node.id,
+										/**
+										 * workaround: https://github.com/statelyai/xstate/issues/4485
+										 */
+										parentRef: self as ActorRefFrom<typeof reactFlowMachine>,
+									},
+								}),
+							},
+						};
+
+						return [...context.nodes, node];
+					},
+				}),
+				raise({ type: "debouncedSave" }),
+			],
 		},
 		"nodes.change": {
-			actions: raise(({ context, event }) => ({
-				type: "nodes.set",
-				nodes: applyNodeChanges(event.changeNodes, context.nodes),
-			})),
+			actions: [
+				assign({
+					nodes: ({ context, event }) =>
+						applyNodeChanges(event.changeNodes, context.nodes),
+				}),
+				raise({ type: "debouncedSave" }),
+			],
 		},
 		"nodes.set": {
 			actions: [
-				cancel("context.store"),
 				assign({
 					nodes: ({ event }) => event.nodes,
 				}),
-				raise(
-					{ type: "context.store" },
-					{
-						id: "context-store",
-						delay: 2000,
-					},
-				),
+				raise({ type: "debouncedSave" }),
 			],
 		},
+		"node.changeData": {
+			actions: [
+				assign({
+					nodes: ({ context, event }) =>
+						context.nodes.map((node) => {
+							if (node.id === event.nodeId) {
+								return {
+									...node,
+									data: {
+										...node.data,
+										...event.data,
+									},
+								};
+							}
 
+							return node;
+						}),
+				}),
+				raise({ type: "debouncedSave" }),
+			],
+		},
 		"edges.change": {
-			actions: raise(({ context, event }) => ({
-				type: "edges.set",
-				edges: applyEdgeChanges(event.changeEdges, context.edges),
-			})),
+			actions: [
+				assign({
+					edges: ({ context, event }) =>
+						applyEdgeChanges(event.changeEdges, context.edges),
+				}),
+				raise({ type: "debouncedSave" }),
+			],
 		},
 		"edges.set": [
 			{
-				actions: assign({
-					edges: ({ event }) => event.edges,
-				}),
+				actions: [
+					assign({
+						edges: ({ event }) => event.edges,
+					}),
+					raise({ type: "debouncedSave" }),
+				],
 			},
 		],
 		connect: {
-			actions: raise(({ context, event }) => ({
-				type: "edges.set",
-				edges: addEdge(event.connection, context.edges),
-			})),
+			actions: [
+				assign({
+					edges: ({ context, event }) =>
+						addEdge(event.connection, context.edges),
+				}),
+				raise({ type: "debouncedSave" }),
+			],
 		},
 		"reactFlowInstance.set": {
 			actions: assign({
